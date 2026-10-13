@@ -93,7 +93,7 @@ function createBot() {
       } catch (error) {
         console.error("Gagal memproses pesan", error);
         await thread.post(
-          "😵‍💫 Maaf, ada gangguan saat mencatat. Coba kirim lagi sebentar lagi ya 🙏",
+          `😵‍💫 Maaf, ada gangguan saat mencatat. Coba kirim lagi sebentar lagi ya 🙏\n\n🔧 ${failureReason(error)}`,
         );
       }
     }
@@ -639,6 +639,28 @@ async function deleteLast(userId: string): Promise<string> {
   if (!last) return "🤷 Belum ada catatan yang bisa dihapus.";
   await deleteExpense(last.id);
   return `🗑️ Dihapus: ${describe(last)}`;
+}
+
+/**
+ * Why recording failed, in a line. Only allowed users reach the bot, so the
+ * owner sees it in the chat instead of having to open the server logs.
+ */
+function failureReason(error: unknown): string {
+  const text =
+    error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  if (/429|RESOURCE_EXHAUSTED|quota/i.test(text)) {
+    return "Kuota Gemini habis (429). Tunggu kuotanya reset, atau pakai API key/model lain.";
+  }
+  if (/API key not valid|API_KEY_INVALID|PERMISSION_DENIED/i.test(text)) {
+    return "API key Gemini ditolak. Cek GOOGLE_GENERATIVE_AI_API_KEY di Vercel.";
+  }
+  if (/TimeoutError|aborted/i.test(text)) {
+    return "Gemini tidak menjawab dalam 25 detik.";
+  }
+  if (/NoObjectGenerated|did not match schema|TypeValidation/i.test(text)) {
+    return "Jawaban Gemini tidak sesuai format yang diminta.";
+  }
+  return text.slice(0, 300);
 }
 
 function describe(expense: Expense): string {
