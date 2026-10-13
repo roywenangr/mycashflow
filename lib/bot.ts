@@ -10,7 +10,7 @@ import {
   type Message,
   type Thread,
 } from "chat";
-import { parseExpense } from "@/lib/ai/parse-expense";
+import { ModelUnavailable, parseExpense } from "@/lib/ai/parse-expense";
 import {
   incomeCommand,
   receiveCommand,
@@ -590,7 +590,18 @@ async function handleMessage(bot: Chat, thread: Thread, message: Message) {
     images,
     today: date,
     wallets: offered.map((w) => ({ id: w.id, label: walletLabel(w, null) })),
+  }).catch((error) => {
+    if (error instanceof ModelUnavailable) return null;
+    throw error;
   });
+  if (!parsed) {
+    await thread.post(
+      images.length > 0
+        ? "🤖 Layanan AI yang membaca foto sedang sibuk di sisi Google, jadi fotonya belum bisa kubaca. Coba kirim lagi beberapa menit lagi, atau ketik saja, misalnya: makan siang 25rb"
+        : "🤖 Layanan AI yang membaca pesan sedang sibuk di sisi Google, dan pesan ini terlalu rumit untuk kubaca tanpa bantuannya. Coba lagi beberapa menit lagi, atau tulis singkat seperti: nasgor 25k",
+    );
+    return;
+  }
   // Don't trust an ID the model made up.
   for (const item of parsed.expenses) {
     if (!offered.some((w) => w.id === item.walletId)) item.walletId = null;
@@ -625,6 +636,11 @@ async function handleMessage(bot: Chat, thread: Thread, message: Message) {
         : undefined,
     ),
   );
+  if (parsed.simple) {
+    await thread.post(
+      "ℹ️ Layanan AI sedang sibuk, jadi pesan ini kubaca dengan cara sederhana. Jumlahnya aman, tapi kategorinya cuma tebakan.",
+    );
+  }
   await ensureKeyboard(bot, userId);
 }
 

@@ -1,11 +1,54 @@
+import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
-import { generateText, Output } from "ai";
+import { generateText, type LanguageModel, Output } from "ai";
 import { z } from "zod";
+import { simpleParse } from "@/lib/ai/simple-parse";
 import { CATEGORIES } from "@/lib/categories";
 
 // Flash-Lite answers in 1-2s; the full Flash alias took 5s to over 2 minutes
 // on the free tier for the same results.
 const MODEL = process.env.EXPENSE_MODEL ?? "gemini-flash-lite-latest";
+// The free tier is overloaded at times ("high demand", or no answer at all),
+// one model more than another, so a second one gets a turn before giving up.
+const FALLBACK_MODEL =
+  process.env.EXPENSE_FALLBACK_MODEL ?? "gemini-flash-latest";
+// Gemini is free, so it reads first. Once ANTHROPIC_API_KEY is set, Claude
+// (paid, so it does not queue behind the free tier) takes over whenever
+// Gemini does not answer in time.
+const CLAUDE_MODEL = process.env.EXPENSE_CLAUDE_MODEL ?? "claude-haiku-5-5";
+const TIMEOUT_MS = 12_000;
+const SHORT_TIMEOUT_MS = 5_000;
+
+type Attempt = { name: string; model: LanguageModel; timeout: number };
+
+/**
+ * The models to try, in order. `simple` is true when the message can also be
+ * read without any model, which is then the last resort.
+ */
+function attempts(simple: boolean): Attempt[] {
+  const gemini = (name: string, timeout: number) => ({
+    name,
+    model: google(name),
+    timeout,
+  });
+  if (process.env.ANTHROPIC_API_KEY) {
+    return [
+      // Kept short: Gemini answers in a second or two when it answers at all.
+      gemini(MODEL, SHORT_TIMEOUT_MS),
+      {
+        name: CLAUDE_MODEL,
+        model: anthropic(CLAUDE_MODEL),
+        timeout: TIMEOUT_MS,
+      },
+    ];
+  }
+  return simple
+    ? [gemini(MODEL, SHORT_TIMEOUT_MS)]
+    : [gemini(MODEL, TIMEOUT_MS), gemini(FALLBACK_MODEL, TIMEOUT_MS)];
+}
+
+/** Thrown when no model answered and the message was not simple enough to read without one. */
+export class ModelUnavailable extends Error {}
 
 const schema = z.object({
   expenses: z.array(
@@ -33,7 +76,10 @@ const schema = z.object({
 
 export type WalletOption = { id: number; label: string };
 export type ParsedExpense = z.infer<typeof schema>["expenses"][number];
-export type ParseResult = z.infer<typeof schema>;
+export type ParseResult = z.infer<typeof schema> & {
+  /** True when the models were unavailable and the message was read by simple rules. */
+  simple?: boolean;
+};
 
 function systemPrompt(todayDate: string, wallets: WalletOption[]) {
   const walletList = wallets.length
@@ -73,12 +119,39 @@ export async function parseExpense(input: {
   today: string;
   wallets: WalletOption[];
 }): Promise<ParseResult> {
+  // Plain "nasgor 25k" messages can be recorded without a model, so for
+  // those the model only gets a short wait before the simple reading is used.
+  const simple =
+    input.images.length === 0 && input.text ? simpleParse(input) : null;
+  for (const { name, model, timeout } of attempts(simple !== null)) {
+    try {
+      return await askModel(model, timeout, input);
+    } catch (error) {
+      console.warn(`Model ${name} tidak menjawab`, (error as Error).message);
+    }
+  }
+  if (!simple) throw new ModelUnavailable("Tidak ada model yang menjawab");
+  return { expenses: simple, note: null, simple: true };
+}
+
+async function askModel(
+  model: LanguageModel,
+  timeout: number,
+  input: {
+    text: string;
+    images: Uint8Array[];
+    today: string;
+    wallets: WalletOption[];
+  },
+): Promise<ParseResult> {
   const { output } = await generateText({
-    model: google(MODEL),
+    model,
     system: systemPrompt(input.today, input.wallets),
     output: Output.object({ schema }),
-    // Fail with an apology rather than leave the chat hanging.
-    abortSignal: AbortSignal.timeout(25_000),
+    // Move on rather than leave the chat hanging.
+    abortSignal: AbortSignal.timeout(timeout),
+    // The SDK's own retries would outlast the timeout.
+    maxRetries: 0,
     messages: [
       {
         role: "user",

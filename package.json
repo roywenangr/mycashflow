@@ -13,6 +13,7 @@
     "db:migrate": "dotenv -e .env.local -- drizzle-kit migrate"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.79",
     "@ai-sdk/google": "^4.0.93",
     "@chat-adapter/state-pg": "^4.41.1",
     "@chat-adapter/telegram": "^4.41.1",
